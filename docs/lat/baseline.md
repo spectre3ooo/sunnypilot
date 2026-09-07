@@ -164,26 +164,36 @@ pinned by regression tests in `test_lat_metrics.py`.
 **The headline cap-vs-rate result was unaffected by all three** — it indexes by the
 per-frame band mask throughout — as were the cut analysis and intervention shares.
 
-## NNLC contamination
+## NNLC
 
-`NeuralNetworkLateralControl` was enabled on the device at 2026-09-06 07:24 UTC, which
-falls **inside** this sample. Routes `00000019` (Sep 6 18:41) and `0000001a` (Sep 6
-21:51) are after it; routes `00000013` through `00000018` are before. NNLC state is not
-recorded in rlogs, so this is inferred from the param file mtime and cannot be
-confirmed per segment.
+`NeuralNetworkLateralControl` was enabled on the device at 2026-09-06 07:24 UTC, inside
+the original sample. Routes `00000013` through `00000018` predate it; `00000019`,
+`0000001a`, `0000001d` and `0000001e` follow it. NNLC state is not recorded in the
+rlogs used here, so the split is inferred from the param file mtime. Going forward it
+is logged directly in `LateralControlSP.nnlcActive`.
 
-Splitting on that boundary (14 segments off, 5 on) shows NNLC-on tracking better while
-being limited more often: p95 error below 15 mph 0.974 to 0.676, second-bend peak 1.619
-to 0.599, limited fraction 0.825 to 0.925. That is consistent with a better feedforward
-asking for more torque sooner and being clipped harder by the rate limit.
+Split on that boundary, 14 segments off against 11 on:
 
-**It is not evidence.** The two groups are different routes on different roads, 5
-segments against 14, with no pairing. Treat it as a hypothesis for T0.6 to test on the
-same roads, not a result. The cap-vs-rate headline is unaffected either way, since NNLC
-changes what torque is requested, not the limiter.
+| Speed band | limited off/on | p95 err off/on | 2nd-bend peak off/on |
+|---|---|---|---|
+| < 15 mph | 0.825 / **0.916** | 0.974 / **0.701** | 1.619 / **0.599** |
+| 15-25 mph | 0.723 / 0.758 | 0.551 / 0.521 | 0.728 / **0.848** |
+| 25-40 mph | 0.539 / 0.583 | 0.370 / 0.317 | 0.716 / 0.681 |
+| all | 0.620 / 0.679 | 0.513 / **0.436** | — |
 
-Going forward this is closed by logging NNLC state in `LateralControlSP` alongside the
-arm id and git hash.
+NNLC is limited **more** often at every speed while tracking **better** overall, by 15
+percent on pooled p95 error and 63 percent on the sub-15 mph second-bend peak. That is
+the signature of a feedforward asking for more torque sooner and being clipped harder
+by the rate limit for doing so.
+
+If it holds, the two changes compound: NNLC produces a better-shaped request, and the
+Phase 2 rate envelope lets more of it through. It also means NNLC has more to gain from
+the envelope work than the stock feedforward does.
+
+**It is still not a controlled comparison.** The two groups are different routes on
+different roads with no pairing, and one metric moves the wrong way (15-25 mph
+second-bend peak, 0.728 to 0.848). The controlled test is the alternating-arm protocol
+on fixed segments in plan section 8.1, with NNLC as one of the arms.
 
 ## Caveats
 
