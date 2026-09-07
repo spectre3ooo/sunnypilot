@@ -470,7 +470,33 @@ struct ModelDataV2SP @0xa1680744031fdb2d {
   }
 }
 
-struct CustomReserved10 @0xcb9fd56c7057593a {
+struct LateralControlSP @0xcb9fd56c7057593a {
+  # Experiment identification: every log must say which arm produced it.
+  armId @0 :Int16;
+  gitHash @1 :Text;
+
+  # Effective Python-side limits this frame. Constant at arm 0; speed-scheduled
+  # once the derived envelope lands, which is why they are logged per frame.
+  effectiveSteerMax @2 :Float32;
+  effectiveDeltaUp @3 :Float32;
+  effectiveDeltaDown @4 :Float32;
+
+  # Which limit bound this frame. The whole point of Phase 0 was establishing
+  # that these are not the same thing.
+  limitedCap @5 :Bool;
+  limitedRate @6 :Bool;
+
+  # >85 deg steer-request cut state. Owned by the car controller; see note in
+  # controlsd_ext.publish_lateral_ext.
+  steerReqCut @7 :Bool;
+  angleLimitCounter @8 :UInt16;
+
+  # Corridor keeping (Phase 3). Unpopulated until it exists.
+  corridorCorrection @9 :Float32;
+  corridorValid @10 :Bool;
+  leftClearance @11 :Float32;
+  rightClearance @12 :Float32;
+  rightBoundIsEdge @13 :Bool;
 }
 
 struct CustomReserved11 @0xc2243c65e0340384 {

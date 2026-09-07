@@ -10,6 +10,7 @@ import openpilot.cereal.messaging as messaging
 from openpilot.cereal import log, custom
 
 from opendbc.car import structs
+from openpilot.common.git import get_short_branch, get_commit
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
@@ -32,7 +33,13 @@ class ControlsExt(ModelStateBase):
     cloudlog.info("controlsd_ext got CarParamsSP")
 
     self.sm_services_ext = ['radarState', 'selfdriveStateSP']
-    self.pm_services_ext = ['carControlSP']
+    self.pm_services_ext = ['carControlSP', 'lateralControlSP']
+
+    # Lateral experiment state. The arm selects which torque envelope the car
+    # controller enforces; it is logged on every frame so a route can never be
+    # attributed to the wrong arm after the fact.
+    self.lat_experiment_arm: int = 0
+    self._git_hash: str = (get_commit() or "")[:12]
 
   def initialize_lateral_control(self, lac, CI, dt):
     enforce_torque_control = self.params.get_bool("EnforceTorqueControl")
@@ -53,6 +60,8 @@ class ControlsExt(ModelStateBase):
 
       if self.CP.lateralTuning.which() == 'torque':
         self.lat_delay = get_lat_delay(self.params, sm["lateralDelay"].lateralDelay)
+
+      self.lat_experiment_arm = int(self.params.get("LatExperimentArm") or 0)
 
       self._param_update_time = time.monotonic()
 
@@ -114,6 +123,36 @@ class ControlsExt(ModelStateBase):
 
     pm.send('carControlSP', cc_sp_send)
 
-  def run_ext(self, sm: messaging.SubMaster, pm: messaging.PubMaster) -> None:
+  def publish_lateral_ext(self, CC, sm: messaging.SubMaster, pm: messaging.PubMaster) -> None:
+    """Publish per-frame lateral experiment telemetry.
+
+    Phase 0 answered "cap or rate" by differencing carControl against carOutput
+    offline. Logging the split live means later phases can be compared without
+    re-deriving it, and means every route carries the arm that produced it.
+
+    Fields owned by the car controller (the >85 deg cut state, and the effective
+    limits once they become speed-scheduled) are not reachable from controlsd and
+    are left at their defaults here. They need a channel out of card; that
+    plumbing is deliberately not part of this change.
+    """
+    msg = messaging.new_message('lateralControlSP')
+    msg.valid = sm['carState'].canValid
+    lat = msg.lateralControlSP
+
+    lat.armId = int(self.lat_experiment_arm)
+    lat.gitHash = self._git_hash
+
+    if self.CP.steerControlType != structs.CarParams.SteerControlType.angle:
+      asked = float(CC.actuators.torque)
+      got = float(sm['carOutput'].actuatorsOutput.torque)
+      limited = abs(asked - got) > 1e-2 and bool(CC.latActive)
+      lat.limitedCap = limited and abs(got) >= 0.98
+      lat.limitedRate = limited and abs(got) < 0.98
+
+    pm.send('lateralControlSP', msg)
+
+  def run_ext(self, sm: messaging.SubMaster, pm: messaging.PubMaster, CC=None) -> None:
     CC_SP = self.state_control_ext(sm)
     self.publish_ext(CC_SP, sm, pm)
+    if CC is not None:
+      self.publish_lateral_ext(CC, sm, pm)
