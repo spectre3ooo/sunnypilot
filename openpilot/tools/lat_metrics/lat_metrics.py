@@ -15,7 +15,7 @@ Usage:
   lat_metrics.py <rlog...> [--geofence f.json] [--out DIR]
 """
 import argparse
-import bisect
+import collections
 import csv
 import json
 import os
@@ -258,13 +258,23 @@ def _find_cuts(s):
 
 
 def _reversals(t, tq, mask):
-    """Time from a + peak to the following - peak (and vice versa), in seconds.
+    """Time from a + torque peak to the following - peak, in seconds.
 
     A torque reversal is what an S-turn demands, and at stock rates it is the
     slowest thing in the loop - the reason this metric exists.
+
+    Two bends only form a reversal if the frames BETWEEN them are also in the
+    band. A speed band has holes (the car crosses the band edge, or lateral
+    control disengages), and pairing across a hole would silently count the time
+    spent outside the band as reversal duration -- e.g. a low-speed bend, forty
+    seconds at 30 mph, then another low-speed bend would be recorded as a single
+    40+ second sub-15 mph reversal.
+
+    Returns (durations, pairs) where pairs are the contiguous (a, b) bend pairs
+    that produced them, so callers measuring "the second bend" use the same
+    filtered set rather than re-deriving it.
     """
-    out = []
-    bends = []  # (sign, idx_of_peak, t_of_peak)
+    bends = []  # (sign, peak_idx, peak_t, start_idx, end_idx)
     i, n = 0, len(tq)
     while i < n:
         if not mask[i] or abs(tq[i]) < REVERSAL_TQ:
@@ -278,12 +288,20 @@ def _reversals(t, tq, mask):
                 best, bi = abs(tq[j]), j
             j += 1
         if best >= REVERSAL_TQ:
-            bends.append((sgn, bi, t[bi]))
+            bends.append((sgn, bi, t[bi], i, j - 1))
         i = max(j, i + 1)
+
+    out, pairs = [], []
     for a, b in zip(bends, bends[1:]):
-        if a[0] != b[0]:
-            out.append(b[2] - a[2])
-    return out, bends
+        if a[0] == b[0]:
+            continue
+        # every frame between the two bends must still be in the band
+        gap_lo, gap_hi = a[4], b[3]
+        if gap_hi > gap_lo and not all(mask[gap_lo:gap_hi + 1]):
+            continue
+        out.append(b[2] - a[2])
+        pairs.append((a, b))
+    return out, pairs
 
 
 def metrics(s):
@@ -293,8 +311,9 @@ def metrics(s):
     asked = np.array(s.asked); got = np.array(s.got)
     active = np.array(s.lat_active, dtype=bool)
     rows = []
+    pooled = {}
     if len(t) == 0:
-        return rows
+        return rows, pooled
 
     diff = np.abs(asked - got)
     limited = (diff > LIMITED_EPS) & active
@@ -309,6 +328,9 @@ def metrics(s):
         n = int(band.sum())
         row = {"segment": s.name, "band": label, "n_frames": n,
                "seconds": round(n / 100.0, 1)}
+        pool = pooled.setdefault(label, {"err": [], "clear": [], "edge": [],
+                                         "n_frames": 0, "n_limited": 0,
+                                         "n_cap": 0, "n_rate": 0, "revs": []})
         if n == 0:
             rows.append({**row, **{k: "" for k in (
                 "frac_limited", "frac_cap_limited", "frac_rate_limited",
@@ -317,6 +339,11 @@ def metrics(s):
                 "n_reversals", "median_reversal_s", "max_abs_angle",
                 "n_cuts", "min_clearance_m", "frac_edge_bound")}})
             continue
+        pool["n_frames"] += n
+        pool["n_limited"] += int(limited[band].sum())
+        pool["n_cap"] += int(cap[band].sum())
+        pool["n_rate"] += int(rate[band].sum())
+        pool["err"].extend(err[band].tolist())
         row["frac_limited"] = round(float(limited[band].mean()), 4)
         row["frac_cap_limited"] = round(float(cap[band].mean()), 4)
         row["frac_rate_limited"] = round(float(rate[band].mean()), 4)
@@ -328,7 +355,8 @@ def metrics(s):
         row["n_interventions"] = int((np.array(s.pressed) & band).sum())
         row["max_abs_angle"] = round(float(np.abs(np.array(s.angle))[band].max()), 1)
 
-        revs, bends = _reversals(t, got, band)
+        revs, pairs = _reversals(t, got, band)
+        pool["revs"].extend(revs)
         row["n_reversals"] = len(revs)
         row["median_reversal_s"] = round(float(np.median(revs)), 3) if revs else ""
 
@@ -336,28 +364,38 @@ def metrics(s):
         # reversal is where running wide shows up, because the rate limit has just
         # spent its budget crossing zero.
         peaks = []
-        for a, b in zip(bends, bends[1:]):
-            if a[0] != b[0]:
-                lo_i, hi_i = b[1], min(b[1] + 150, len(err))
-                if hi_i > lo_i:
-                    peaks.append(float(err[lo_i:hi_i].max()))
+        for _a, b in pairs:
+            lo_i, hi_i = b[1], min(b[1] + 150, len(err))
+            if hi_i > lo_i:
+                peaks.append(float(err[lo_i:hi_i].max()))
         row["peak_err_2nd_bend"] = round(max(peaks), 3) if peaks else ""
 
         cuts_in = [i for i in s.cut_idx if i < len(band) and band[i]]
         row["n_cuts"] = len(cuts_in)
 
         if len(mt):
-            lo_t, hi_t = t[band].min(), t[band].max()
-            msel = (mt >= lo_t) & (mt <= hi_t)
+            # Map each 20 Hz model frame onto the nearest 100 Hz state frame and
+            # test band membership THERE. Selecting by the band's [min, max] time
+            # range instead would take the convex hull of the band: speed bands
+            # are not contiguous (the car crosses 15/25/40 mph repeatedly within
+            # one 60 s recording), so the hull sweeps in all the out-of-band time
+            # between the first and last in-band frame, and drops the latActive
+            # requirement that `band` carries.
+            idx = np.clip(np.searchsorted(t, mt), 0, len(t) - 1)
+            left = np.clip(idx - 1, 0, len(t) - 1)
+            nearest = np.where(np.abs(mt - t[left]) < np.abs(t[idx] - mt), left, idx)
+            msel = band[nearest] & (np.abs(mt - t[nearest]) <= 0.05)
             cm = np.array(s.clear_min)[msel]
+            pool["clear"].extend(cm.tolist())
             row["min_clearance_m"] = round(float(cm.min()), 2) if len(cm) else ""
             be = np.array(s.bound_edge)[msel]
+            pool["edge"].extend(be.tolist())
             row["frac_edge_bound"] = round(float(be.mean()), 3) if len(be) else ""
         else:
             row["min_clearance_m"] = ""
             row["frac_edge_bound"] = ""
         rows.append(row)
-    return rows
+    return rows, pooled
 
 
 def cut_report(segs):
@@ -385,6 +423,7 @@ def main():
 
     os.makedirs(args.out, exist_ok=True)
     all_rows, segs = [], []
+    POOL = {}
     for i, p in enumerate(args.rlogs, 1):
         try:
             s = load(p)
@@ -393,8 +432,16 @@ def main():
                   file=sys.stderr)
             continue
         segs.append(s)
-        r = metrics(s)
+        r, pooled = metrics(s)
         all_rows += r
+        for band, d in pooled.items():
+            acc = POOL.setdefault(band, {"err": [], "clear": [], "edge": [],
+                                         "n_frames": 0, "n_limited": 0,
+                                         "n_cap": 0, "n_rate": 0, "revs": []})
+            for k in ("err", "clear", "edge", "revs"):
+                acc[k].extend(d[k])
+            for k in ("n_frames", "n_limited", "n_cap", "n_rate"):
+                acc[k] += d[k]
         print(f"  [{i}/{len(args.rlogs)}] {s.name}: {len(s.t)} frames, "
               f"{len(s.cut_idx)} cuts", file=sys.stderr)
 
@@ -414,29 +461,46 @@ def main():
         fh.write("# Lateral limit baseline\n\n")
         fh.write(f"Segments: {len(segs)}\n\n")
         fh.write("## Which limit binds, by speed band\n\n")
+        fh.write("All figures are POOLED over segments, not averages of per-segment\n"
+                 "values: a frame-weighted mean of per-segment p95s is not the p95 of\n"
+                 "the combined sample, and a rate share must be weighted by limited\n"
+                 "frames rather than total frames.\n\n")
         fh.write("| band | frames | frac limited | cap | rate | rate share | "
                  "p95 err | 2nd-bend peak | reversals | median rev s |\n")
         fh.write("|---|---|---|---|---|---|---|---|---|---|\n")
         for label, _, _ in BANDS + [("all", 0, 0)]:
-            rs = [r for r in all_rows if r["band"] == label and r["n_frames"]]
-            if not rs:
+            d = POOL.get(label)
+            if not d or not d["n_frames"]:
                 continue
-            n = sum(r["n_frames"] for r in rs)
-            wavg = lambda k: sum(float(r[k]) * r["n_frames"] for r in rs if r[k] != "") / max(
-                sum(r["n_frames"] for r in rs if r[k] != ""), 1)
-            revs = sum(r["n_reversals"] for r in rs)
-            meds = [float(r["median_reversal_s"]) for r in rs if r["median_reversal_s"] != ""]
-            pk = [float(r["peak_err_2nd_bend"]) for r in rs if r["peak_err_2nd_bend"] != ""]
-            fh.write(f"| {label} | {n} | {wavg('frac_limited'):.3f} | "
-                     f"{wavg('frac_cap_limited'):.3f} | {wavg('frac_rate_limited'):.3f} | "
-                     f"{wavg('rate_share_of_limited'):.2f} | {wavg('p95_track_err'):.3f} | "
-                     f"{(max(pk) if pk else 0):.3f} | {revs} | "
-                     f"{(np.median(meds) if meds else 0):.2f} |\n")
-        import collections as _c
+            nf = d["n_frames"]
+            rs = [r for r in all_rows if r["band"] == label and r["n_frames"]]
+            pk = [float(r["peak_err_2nd_bend"]) for r in rs
+                  if r["peak_err_2nd_bend"] != ""]
+            fh.write(
+                f"| {label} | {nf} | {d['n_limited']/nf:.3f} | "
+                f"{d['n_cap']/nf:.3f} | {d['n_rate']/nf:.3f} | "
+                f"{(d['n_rate']/d['n_limited'] if d['n_limited'] else 0):.2f} | "
+                f"{(np.percentile(d['err'], 95) if d['err'] else 0):.3f} | "
+                f"{(max(pk) if pk else 0):.3f} | {len(d['revs'])} | "
+                f"{(np.median(d['revs']) if d['revs'] else 0):.2f} |\n")
+
+        fh.write("\n## Inside-cutting clearance (pooled)\n\n")
+        fh.write("| band | curve frames | median | p5 | worst | frames crossing | "
+                 "road edge used |\n")
+        fh.write("|---|---|---|---|---|---|---|\n")
+        for label, _, _ in BANDS:
+            d = POOL.get(label)
+            if not d or not d["clear"]:
+                continue
+            c = np.array(d["clear"])
+            e = np.array(d["edge"]) if d["edge"] else np.array([0.0])
+            fh.write(f"| {label} | {len(c)} | {np.median(c):+.2f} m | "
+                     f"{np.percentile(c, 5):+.2f} m | {c.min():+.2f} m | "
+                     f"{int((c < 0).sum())} | {e.mean():.0%} |\n")
         fh.write(f"\n## Steer-request cuts (plan section 5)\n\n")
         fh.write(f"- cut events: {tot}\n")
         fh.write(f"- at |steeringAngleDeg| >= 85: {ok}/{tot}\n")
-        fh.write(f"- cut durations (frames): {dict(_c.Counter(lens))}\n")
+        fh.write(f"- cut durations (frames): {dict(collections.Counter(lens))}\n")
         fh.write(f"- torque value held (not zeroed) through cut: {held}/{tot}\n")
         if dips:
             fh.write(f"- steeringTorqueEps swing in 150 ms after cut: "
