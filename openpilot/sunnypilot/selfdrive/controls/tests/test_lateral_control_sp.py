@@ -25,12 +25,13 @@ class FakePubMaster:
 class Stub:
   """Minimal stand-in: ControlsExt.__init__ blocks on CarParamsSP from Params."""
 
-  def __init__(self, arm=0, steer_type=None):
+  def __init__(self, arm=0, steer_type=None, nnlc=False):
     CP = structs.CarParams()
     CP.steerControlType = steer_type if steer_type is not None else \
         structs.CarParams.SteerControlType.torque
     self.CP = CP
     self.lat_experiment_arm = arm
+    self.nnlc_active = nnlc
     self._git_hash = "deadbeef1234"
 
 
@@ -63,6 +64,11 @@ class TestLateralControlSP(unittest.TestCase):
     lat = _publish(Stub(arm=2), _cc(), _sm())
     self.assertEqual(lat.armId, 2)
     self.assertEqual(lat.gitHash, "deadbeef1234")
+
+  def test_nnlc_state_is_logged(self):
+    """The Phase 0 baseline was contaminated by NNLC toggling with no log record."""
+    self.assertTrue(_publish(Stub(nnlc=True), _cc(), _sm()).nnlcActive)
+    self.assertFalse(_publish(Stub(nnlc=False), _cc(), _sm()).nnlcActive)
 
   def test_rate_limited_when_output_lags_request(self):
     lat = _publish(Stub(), _cc(torque=0.5), _sm(out_torque=0.2))

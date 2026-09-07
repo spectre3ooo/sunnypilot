@@ -39,6 +39,7 @@ class ControlsExt(ModelStateBase):
     # controller enforces; it is logged on every frame so a route can never be
     # attributed to the wrong arm after the fact.
     self.lat_experiment_arm: int = 0
+    self.nnlc_active: bool = False
     self._git_hash: str = (get_commit() or "")[:12]
 
   def initialize_lateral_control(self, lac, CI, dt):
@@ -62,6 +63,7 @@ class ControlsExt(ModelStateBase):
         self.lat_delay = get_lat_delay(self.params, sm["lateralDelay"].lateralDelay)
 
       self.lat_experiment_arm = int(self.params.get("LatExperimentArm") or 0)
+      self.nnlc_active = self.params.get_bool("NeuralNetworkLateralControl")
 
       self._param_update_time = time.monotonic()
 
@@ -141,6 +143,7 @@ class ControlsExt(ModelStateBase):
 
     lat.armId = int(self.lat_experiment_arm)
     lat.gitHash = self._git_hash
+    lat.nnlcActive = bool(self.nnlc_active)
 
     if self.CP.steerControlType != structs.CarParams.SteerControlType.angle:
       asked = float(CC.actuators.torque)

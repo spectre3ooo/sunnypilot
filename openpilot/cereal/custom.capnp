@@ -472,6 +472,9 @@ struct ModelDataV2SP @0xa1680744031fdb2d {
 
 struct LateralControlSP @0xcb9fd56c7057593a {
   # Experiment identification: every log must say which arm produced it.
+  # nnlcActive is here because the Phase 0 baseline was contaminated by NNLC being
+  # toggled mid-sample with no record of it in any log, leaving the state inferable
+  # only from a param file mtime.
   armId @0 :Int16;
   gitHash @1 :Text;
 
@@ -497,6 +500,8 @@ struct LateralControlSP @0xcb9fd56c7057593a {
   leftClearance @11 :Float32;
   rightClearance @12 :Float32;
   rightBoundIsEdge @13 :Bool;
+
+  nnlcActive @14 :Bool;
 }
 
 struct CustomReserved11 @0xc2243c65e0340384 {

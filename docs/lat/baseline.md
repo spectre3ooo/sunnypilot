@@ -47,23 +47,32 @@ above 40**. That is "running wide on the exit of an S-turn", quantified.
 
 ## Reversal times
 
-Median time from a `carOutput` torque peak to the next opposite-sign peak, counting
-only pairs whose intervening frames are also in the band:
+Two measures, from `carOutput` torque, counting only pairs whose intervening frames
+are also in the band:
 
-| Speed band | reversals | median (s) |
-|---|---|---|
-| < 15 mph | 19 | 3.18 |
-| 15–25 mph | 29 | 2.47 |
-| 25–40 mph | 26 | 4.83 |
-| > 40 mph | 1 | 10.06 |
+- **peak-to-peak** - plus peak to the next opposite peak, as the plan specifies.
+  Includes dwell in each bend.
+- **transit** - bend exit to opposite-bend entry. The rate-limited crossing alone.
 
-**Caveat:** this is peak-to-peak as the plan specifies, so it still includes dwell
-time in each bend, not only the rate-limited transit between them. It is a valid
-before/after comparator but must not be read directly against plan §2's 2.25 s
-figure for a full ±270 swing. Isolating the transition (first departure from a peak
-to first arrival at the opposite peak) would be the sharper metric and is worth
-adding before Phase 2 gates on it. The `> 40 mph` figure rests on a single
-reversal and should be ignored.
+| Speed band | reversals | peak-to-peak (s) | transit (s) |
+|---|---|---|---|
+| < 15 mph | 19 | 3.18 | **0.78** |
+| 15-25 mph | 29 | 2.47 | **0.63** |
+| 25-40 mph | 26 | 4.83 | **1.11** |
+| > 40 mph | 1 | 10.06 | 8.67 |
+
+The > 40 mph row rests on a single reversal; ignore it.
+
+**This refines the plan's headline figure.** Plan section 2 computes 2.25 s for a full
+270-to-minus-270 swing at stock rates. Measured transits are 0.63-0.78 s below 25 mph,
+far shorter, because real corners do not demand full-amplitude reversals. The 2.25 s
+number is a worst case that does not occur on these roads.
+
+That does not weaken the case for the rate limit being the binding constraint; it
+changes its character. The cost is not occasional multi-second reversals, it is the
+request being shaved on 80 percent of engaged low-speed frames. Phase 2 should be
+gated on the limited fraction and the second-bend tracking error, which measure that
+directly, rather than on a reversal time whose worst case is never observed.
 
 ## Driver interventions
 
@@ -154,6 +163,27 @@ pinned by regression tests in `test_lat_metrics.py`.
 
 **The headline cap-vs-rate result was unaffected by all three** — it indexes by the
 per-frame band mask throughout — as were the cut analysis and intervention shares.
+
+## NNLC contamination
+
+`NeuralNetworkLateralControl` was enabled on the device at 2026-09-06 07:24 UTC, which
+falls **inside** this sample. Routes `00000019` (Sep 6 18:41) and `0000001a` (Sep 6
+21:51) are after it; routes `00000013` through `00000018` are before. NNLC state is not
+recorded in rlogs, so this is inferred from the param file mtime and cannot be
+confirmed per segment.
+
+Splitting on that boundary (14 segments off, 5 on) shows NNLC-on tracking better while
+being limited more often: p95 error below 15 mph 0.974 to 0.676, second-bend peak 1.619
+to 0.599, limited fraction 0.825 to 0.925. That is consistent with a better feedforward
+asking for more torque sooner and being clipped harder by the rate limit.
+
+**It is not evidence.** The two groups are different routes on different roads, 5
+segments against 14, with no pairing. Treat it as a hypothesis for T0.6 to test on the
+same roads, not a result. The cap-vs-rate headline is unaffected either way, since NNLC
+changes what torque is requested, not the limiter.
+
+Going forward this is closed by logging NNLC state in `LateralControlSP` alongside the
+arm id and git hash.
 
 ## Caveats
 
