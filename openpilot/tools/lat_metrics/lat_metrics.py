@@ -291,7 +291,7 @@ def _reversals(t, tq, mask):
             bends.append((sgn, bi, t[bi], i, j - 1))
         i = max(j, i + 1)
 
-    out, pairs = [], []
+    out, trans, pairs = [], [], []
     for a, b in zip(bends, bends[1:]):
         if a[0] == b[0]:
             continue
@@ -299,9 +299,10 @@ def _reversals(t, tq, mask):
         gap_lo, gap_hi = a[4], b[3]
         if gap_hi > gap_lo and not all(mask[gap_lo:gap_hi + 1]):
             continue
-        out.append(b[2] - a[2])
+        out.append(b[2] - a[2])          # peak-to-peak, as the plan specifies
+        trans.append(t[b[3]] - t[a[4]])  # transit only: bend exit -> opposite bend entry
         pairs.append((a, b))
-    return out, pairs
+    return out, trans, pairs
 
 
 def metrics(s):
@@ -330,13 +331,13 @@ def metrics(s):
                "seconds": round(n / 100.0, 1)}
         pool = pooled.setdefault(label, {"err": [], "clear": [], "edge": [],
                                          "n_frames": 0, "n_limited": 0,
-                                         "n_cap": 0, "n_rate": 0, "revs": []})
+                                         "n_cap": 0, "n_rate": 0, "revs": [], "trans": []})
         if n == 0:
             rows.append({**row, **{k: "" for k in (
                 "frac_limited", "frac_cap_limited", "frac_rate_limited",
                 "rate_share_of_limited", "p95_track_err", "peak_err_2nd_bend",
                 "frac_saturated", "n_faults", "n_interventions",
-                "n_reversals", "median_reversal_s", "max_abs_angle",
+                "n_reversals", "median_reversal_s", "median_transition_s", "max_abs_angle",
                 "n_cuts", "min_clearance_m", "frac_edge_bound")}})
             continue
         pool["n_frames"] += n
@@ -355,10 +356,12 @@ def metrics(s):
         row["n_interventions"] = int((np.array(s.pressed) & band).sum())
         row["max_abs_angle"] = round(float(np.abs(np.array(s.angle))[band].max()), 1)
 
-        revs, pairs = _reversals(t, got, band)
+        revs, trans, pairs = _reversals(t, got, band)
         pool["revs"].extend(revs)
+        pool["trans"].extend(trans)
         row["n_reversals"] = len(revs)
         row["median_reversal_s"] = round(float(np.median(revs)), 3) if revs else ""
+        row["median_transition_s"] = round(float(np.median(trans)), 3) if trans else ""
 
         # peak tracking error in the SECOND bend of each S-turn: the bend after a
         # reversal is where running wide shows up, because the rate limit has just
@@ -437,8 +440,8 @@ def main():
         for band, d in pooled.items():
             acc = POOL.setdefault(band, {"err": [], "clear": [], "edge": [],
                                          "n_frames": 0, "n_limited": 0,
-                                         "n_cap": 0, "n_rate": 0, "revs": []})
-            for k in ("err", "clear", "edge", "revs"):
+                                         "n_cap": 0, "n_rate": 0, "revs": [], "trans": []})
+            for k in ("err", "clear", "edge", "revs", "trans"):
                 acc[k].extend(d[k])
             for k in ("n_frames", "n_limited", "n_cap", "n_rate"):
                 acc[k] += d[k]
@@ -466,8 +469,8 @@ def main():
                  "the combined sample, and a rate share must be weighted by limited\n"
                  "frames rather than total frames.\n\n")
         fh.write("| band | frames | frac limited | cap | rate | rate share | "
-                 "p95 err | 2nd-bend peak | reversals | median rev s |\n")
-        fh.write("|---|---|---|---|---|---|---|---|---|---|\n")
+                 "p95 err | 2nd-bend peak | reversals | median rev s | median transit s |\n")
+        fh.write("|---|---|---|---|---|---|---|---|---|---|---|\n")
         for label, _, _ in BANDS + [("all", 0, 0)]:
             d = POOL.get(label)
             if not d or not d["n_frames"]:
@@ -482,7 +485,8 @@ def main():
                 f"{(d['n_rate']/d['n_limited'] if d['n_limited'] else 0):.2f} | "
                 f"{(np.percentile(d['err'], 95) if d['err'] else 0):.3f} | "
                 f"{(max(pk) if pk else 0):.3f} | {len(d['revs'])} | "
-                f"{(np.median(d['revs']) if d['revs'] else 0):.2f} |\n")
+                f"{(np.median(d['revs']) if d['revs'] else 0):.2f} | "
+                f"{(np.median(d['trans']) if d['trans'] else 0):.2f} |\n")
 
         fh.write("\n## Inside-cutting clearance (pooled)\n\n")
         fh.write("| band | curve frames | median | p5 | worst | frames crossing | "

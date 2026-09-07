@@ -34,18 +34,24 @@ class TestReversalsDoNotSpanGaps(unittest.TestCase):
 
     def test_gap_spanning_pair_is_rejected(self):
         t, tq, mask = self._trace()
-        durations, pairs = _reversals(t, tq, mask)
+        durations, transits, pairs = _reversals(t, tq, mask)
         self.assertEqual(durations, [], "bends separated by out-of-band frames "
                                         "must not form a reversal")
+        self.assertEqual(transits, [])
         self.assertEqual(pairs, [])
 
     def test_contiguous_pair_is_still_detected(self):
         # same bends, but the whole window is in band -> a real reversal
         t, tq, _ = self._trace()
         mask = np.ones(len(t), dtype=bool)
-        durations, pairs = _reversals(t, tq, mask)
+        durations, transits, pairs = _reversals(t, tq, mask)
         self.assertEqual(len(durations), 1)
         self.assertAlmostEqual(durations[0], 49.0, places=1)
+        # transit excludes dwell in each bend: peaks are 49 s apart but the bends
+        # themselves span 2 s each, so the actual crossing is much shorter
+        self.assertEqual(len(transits), 1)
+        self.assertLess(transits[0], durations[0])
+        self.assertAlmostEqual(transits[0], 47.0, places=1)
 
 
 class TestClearanceUsesBandMembership(unittest.TestCase):
