@@ -250,7 +250,7 @@ class Controls(ControlsExt):
       CC, lac_log = self.state_control()
       self.publish(CC, lac_log)
       self.get_params_sp(self.sm)
-      self.run_ext(self.sm, self.pm)
+      self.run_ext(self.sm, self.pm, CC)
       rk.monitor_time()
 
 
