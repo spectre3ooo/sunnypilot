@@ -1220,6 +1220,20 @@ struct DriverAssistance {
 
 struct LateralManeuverPlan {
   desiredCurvature @0 :Float32;  # 1/m
+
+  # Identify the maneuver in the log. Without these the offline fitter has to parse
+  # alertDebug display strings, which are formatted for a human and change freely.
+  maneuverName @1 :Text;
+  maneuverPhase @2 :Phase;
+
+  enum Phase {
+    idle @0;       # no maneuver pending
+    waiting @1;    # maneuver selected, road/speed conditions not met
+    starting @2;   # conditions met, counting down
+    active @3;     # commanding lateral accel
+    complete @4;   # run finished
+    aborted @5;    # driver input or speed drift
+  }
 }
 
 struct LongitudinalPlan @0xe00b5b3eba12876c {
