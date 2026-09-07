@@ -108,7 +108,16 @@ def main():
   sm = messaging.SubMaster(['carState', 'carControl', 'controlsState', 'selfdriveState', 'modelV2'], poll='modelV2')
   pm = messaging.PubMaster(['lateralManeuverPlan', 'alertDebug'])
 
-  maneuvers = iter(MANEUVERS)
+  # sunnypilot: swap in the low-speed system-identification set when asked. comma's
+  # MANEUVERS above is the default and is deliberately left alone.
+  active_maneuvers = MANEUVERS
+  if params.get_bool("LateralIdMode"):
+    from openpilot.sunnypilot.tools.lateral_id.maneuvers import MANEUVERS as ID_MANEUVERS
+    active_maneuvers = ID_MANEUVERS
+    cloudlog.info(f"lateral_maneuversd: LateralIdMode, {len(ID_MANEUVERS)} maneuvers")
+
+  maneuvers = iter(active_maneuvers)
+  phase = "idle"
   maneuver = None
   complete_cnt = 0
   aborted_cnt = 0
@@ -131,8 +140,10 @@ def main():
     v_ego = max(sm['carState'].vEgo, 0)
     curvature = sm['controlsState'].desiredCurvature
 
+    phase = "idle"
     if complete_cnt > 0:
       complete_cnt -= 1
+      phase = "complete"
       alert_msg.alertDebug.alertText1 = 'Completed'
       alert_msg.alertDebug.alertText2 = maneuver.description
     elif maneuver is not None:
@@ -151,9 +162,11 @@ def main():
 
       if maneuver._run_completed:
         complete_cnt = int(1.0 / DT_MDL)
+        phase = "complete"
         alert_msg.alertDebug.alertText1 = 'Complete'
         alert_msg.alertDebug.alertText2 = maneuver.description
       elif maneuver.active:
+        phase = "active"
         action_remaining = maneuver.actions[maneuver._action_index].time_bp[-1] - maneuver._action_frames * DT_MDL
         if maneuver.description.startswith('sine'):
           freq = maneuver.description.split()[1]
@@ -163,14 +176,18 @@ def main():
         alert_msg.alertDebug.alertText2 = maneuver.description
       elif aborted_cnt > 0:
         aborted_cnt -= 1
+        phase = "aborted"
         alert_msg.alertDebug.alertText1 = abort_reason
       elif not (abs(v_ego - maneuver.initial_speed) < MAX_SPEED_DEV and sm['carControl'].latActive):
+        phase = "waiting"
         alert_msg.alertDebug.alertText1 = f'Set speed to {maneuver.initial_speed * CV.MS_TO_MPH:0.0f} mph'
       elif maneuver._ready_cnt > 0:
+        phase = "starting"
         ready_time = max(TIMER - maneuver._ready_cnt * DT_MDL, 0)
         alert_msg.alertDebug.alertText1 = f'Starting: {int(ready_time) + 1}'
         alert_msg.alertDebug.alertText2 = maneuver.description
       else:
+        phase = "waiting"
         curv_ok = abs(curvature) < MAX_CURV
         reason = 'road not straight' if not curv_ok else 'road not flat'
         alert_msg.alertDebug.alertText1 = f'Waiting: {reason}'
@@ -194,6 +211,10 @@ def main():
     plan_send.valid = maneuver is not None and maneuver.active and complete_cnt == 0
     if plan_send.valid:
       plan_send.lateralManeuverPlan.desiredCurvature = maneuver._baseline_curvature + accel / max(v_ego, MIN_SPEED) ** 2
+    # name and phase are published every frame, including while waiting and after an
+    # abort, so the fitter can segment a log without reconstructing state.
+    plan_send.lateralManeuverPlan.maneuverName = maneuver.description if maneuver is not None else ""
+    plan_send.lateralManeuverPlan.maneuverPhase = phase
     pm.send('lateralManeuverPlan', plan_send)
 
     if maneuver is not None and maneuver.finished and complete_cnt == 0:
