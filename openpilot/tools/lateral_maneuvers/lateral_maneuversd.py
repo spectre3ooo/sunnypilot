@@ -42,6 +42,30 @@ class Maneuver(_Maneuver):
     self._ready_cnt = 0
 
 
+def should_abort(CS, allow_gas: bool) -> str:
+  """Which driver input, if any, should abort the run. Empty string means continue.
+
+  Steering always aborts: the maneuver commands lateral, so a hand on the wheel is a
+  direct conflict.
+
+  Gas is different. It is longitudinal, and the maneuver only commands lateral, so it
+  does not fight the run. comma aborts on it under the general rule that any driver
+  input means the driver is intervening, which is right for their set. For the
+  low-speed identification set it is disqualifying: this car's stock cruise will not
+  set below 20 mph, so the 10 and 15 mph maneuvers can only be flown with a foot on
+  the accelerator. Aborting on gas would make them unreachable by any means.
+
+  The speed requirement is not weakened by this. It is enforced independently and more
+  tightly by MAX_SPEED_DEV, which resets the run if speed drifts beyond +/-0.7 m/s of
+  target, and by the readiness gate before the run starts.
+  """
+  if CS.steeringPressed:
+    return 'steering pressed'
+  if CS.gasPressed and not allow_gas:
+    return 'gas pressed'
+  return ''
+
+
 def _sine_action(amplitude, period, duration):
   t = np.linspace(0, duration, int(duration / DT_MDL) + 1)
   a = amplitude * np.sin(2 * np.pi * t / period)
@@ -111,7 +135,10 @@ def main():
   # sunnypilot: swap in the low-speed system-identification set when asked. comma's
   # MANEUVERS above is the default and is deliberately left alone.
   active_maneuvers = MANEUVERS
-  if params.get_bool("LateralIdMode"):
+  # Holding the accelerator is the only way to reach 10 and 15 mph on a car whose
+  # stock cruise will not set below 20. See should_abort.
+  allow_gas = params.get_bool("LateralIdMode")
+  if allow_gas:
     from openpilot.sunnypilot.tools.lateral_id.maneuvers import MANEUVERS as ID_MANEUVERS
     active_maneuvers = ID_MANEUVERS
     cloudlog.info(f"lateral_maneuversd: LateralIdMode, {len(ID_MANEUVERS)} maneuvers")
@@ -149,9 +176,10 @@ def main():
     elif maneuver is not None:
       # any driver input aborts the maneuver
       CS = sm['carState']
-      if CS.steeringPressed or CS.gasPressed:
+      reason = should_abort(CS, allow_gas)
+      if reason:
         aborted_cnt = int(1.0 / DT_MDL)
-        abort_reason = ('steering pressed' if CS.steeringPressed else 'gas pressed').ljust(20)
+        abort_reason = reason.ljust(20)
       aborted = aborted_cnt > 0
       speed_out_of_range = maneuver.active and abs(v_ego - maneuver.initial_speed) > MAX_SPEED_DEV
       if aborted or speed_out_of_range:
