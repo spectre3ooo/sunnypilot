@@ -20,3 +20,9 @@ if [ -z "$AGNOS_VERSION" ]; then
 fi
 
 export STAGING_ROOT="/data/safe_staging"
+
+# Start Tailscale installed by spectre3ooo/tailscale-comma3x. Tracked here because the installer's
+# own hook is appended to this file, and every openpilot update resets it.
+if [ -x /data/tailscale/start_tailscale.sh ] && ! pgrep -x tailscaled > /dev/null; then
+  sudo -n /data/tailscale/start_tailscale.sh &
+fi
