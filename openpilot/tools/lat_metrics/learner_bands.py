@@ -207,9 +207,9 @@ class BandLagEstimator(lagd.LateralLagEstimator):
       self.points.okay[-1] = False
 
 
-def _new_lag_estimators(CP):
-  ests = {name: BandLagEstimator(CP, LAG_DT_RLOG, hi, min_vego=lo) for name, lo, hi in BANDS}
-  ests[STOCK] = BandLagEstimator(CP, LAG_DT_RLOG, np.inf)  # lagd defaults: > 50 mph
+def _new_lag_estimators(CP, okay_window):
+  ests = {name: BandLagEstimator(CP, LAG_DT_RLOG, hi, min_vego=lo, okay_window_sec=okay_window) for name, lo, hi in BANDS}
+  ests[STOCK] = BandLagEstimator(CP, LAG_DT_RLOG, np.inf, okay_window_sec=okay_window)  # lagd's default floor: > 50 mph
   return ests
 
 
@@ -228,7 +228,7 @@ LAG_INPUTS = lagd.LateralLagEstimator.inputs
 TORQUE_INPUTS = {"carControl", "carOutput", "carState", "extrinsicsCalibration", "deviceMotion", "lateralDelay"}
 
 
-def process_route(files, min_speed):
+def process_route(files, min_speed, lag_okay_window=lagd.MIN_OKAY_WINDOW_SEC):
   """files: [(seg_no, kind, path)] for one route, sorted. Estimators carry across
   consecutive segments and reset at a gap, as they would on the car."""
   from openpilot.tools.lib.logreader import LogReader
@@ -244,7 +244,7 @@ def process_route(files, min_speed):
     if not contiguous and CP is not None:
       torque = torque.__class__(CP, decimated=(kind == "qlog"), track_all_points=True)
     if CP is not None and (not contiguous or kind != "rlog" or prev_kind != "rlog"):
-      lag_ests = _new_lag_estimators(CP) if kind == "rlog" else None
+      lag_ests = _new_lag_estimators(CP, lag_okay_window) if kind == "rlog" else None
     prev_seg, prev_kind = seg_no, kind
     res.segments.append((seg_id, kind))
 
@@ -264,7 +264,7 @@ def process_route(files, min_speed):
         res.fingerprint = CP.carFingerprint
         VM = VehicleModel(CP)
         torque = torqued.TorqueEstimator(CP, decimated=(kind == "qlog"), track_all_points=True)
-        lag_ests = _new_lag_estimators(CP) if kind == "rlog" else None
+        lag_ests = _new_lag_estimators(CP, lag_okay_window) if kind == "rlog" else None
         continue
       if CP is None or not m.valid:
         continue
@@ -549,8 +549,10 @@ def render(summary, meta):
   lines += [
     "## Lateral delay (`lagd`, rlogs only)", "",
     (f"Logged on device: lateralDelay **{_fmt(L.get('lateralDelay'))} s**. An estimate needs ≥ " +
-     f"{lagd.MIN_OKAY_WINDOW_SEC:g} s of okay samples inside a {lagd.MOVING_WINDOW_SEC:g} s window, plus " +
-     "lagd's correlation and confidence checks; *okay s* shows how much qualifying driving each band saw."), "",
+     f"{meta['lag_okay_window']:g} s of okay samples inside a {lagd.MOVING_WINDOW_SEC:g} s window, plus " +
+     "lagd's correlation and confidence checks; *okay s* shows how much qualifying driving each band saw." +
+     ("" if meta["lag_okay_window"] == lagd.MIN_OKAY_WINDOW_SEC else
+      f" **Non-stock:** lagd itself requires {lagd.MIN_OKAY_WINDOW_SEC:g} s; these rows use a relaxed window.")), "",
     "| band | okay s | estimates | segs | median s | IQR | 90 % CI of median |",
     "|---|---|---|---|---|---|---|",
   ]
@@ -564,6 +566,59 @@ def render(summary, meta):
   return "\n".join(lines)
 
 
+def lag_okay_seconds(path):
+  """Seconds per band that would pass lagd's okay test, approximated from a qlog's 10 Hz
+  controls messages, so rlogs worth fetching can be chosen before paying for them.
+  Approximations: lat accel from the controller's actual (not pose), and no calib check."""
+  from openpilot.tools.lib.logreader import LogReader
+  okay = dict.fromkeys([STOCK] + [b[0] for b in BANDS], 0.0)
+  lat_active = pressed = False
+  v = 0.0
+  last_bad_t = -1e9
+  prev_t = None
+  for m in LogReader(path):
+    which = m.which()
+    if which == "carControl":
+      lat_active = m.carControl.latActive
+    elif which == "carState":
+      pressed = m.carState.steeringPressed
+      v = m.carState.vEgo
+    elif which == "controlsState":
+      t = m.logMonoTime * 1e-9
+      dt, prev_t = (0.0 if prev_t is None else min(t - prev_t, 0.5)), t
+      lcs = m.controlsState.lateralControlState
+      ts = getattr(lcs, lcs.which())
+      la_ok = lcs.which() == "torqueState" and abs(ts.actualLateralAccel) <= lagd.MAX_LAT_ACCEL and \
+        abs(ts.desiredLateralAccel - ts.actualLateralAccel) <= lagd.MAX_LAT_ACCEL_DIFF
+      if not lat_active or pressed or ts.saturated or not la_ok:
+        last_bad_t = t
+      if t - last_bad_t >= lagd.MIN_RECOVERY_BUFFER_SEC:
+        if v > lagd.MIN_VEGO:
+          okay[STOCK] += dt
+        if (band := band_of(v)) is not None:
+          okay[band] += dt
+  return okay
+
+
+def screen_lag(paths, jobs, min_okay):
+  routes = discover(paths)
+  files = [(f"{r}--{seg}", f) for r, segs in routes.items() for seg, _, f in segs]
+  with ProcessPoolExecutor(jobs) as ex:
+    results = list(ex.map(lag_okay_seconds, [f for _, f in files], chunksize=4))
+  names = [STOCK] + [b[0] for b in BANDS]
+  print("segment," + ",".join(names))
+  totals = dict.fromkeys(names, 0.0)
+  picked = 0
+  for (seg, _), okay in zip(files, results, strict=True):
+    for k in names:
+      totals[k] += okay[k]
+    if max(okay.values()) >= min_okay:
+      picked += 1
+      print(seg + "," + ",".join(f"{okay[k]:.0f}" for k in names))
+  print(f"# {picked}/{len(files)} segments with >= {min_okay:g} s okay in some band; totals (s): " +
+        ", ".join(f"{k} {totals[k]:.0f}" for k in names), file=sys.stderr)
+
+
 def main():
   ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
   ap.add_argument("logs", nargs="+", help="rlog/qlog files, or directories containing <route>--<seg>/{rlog,qlog}*")
@@ -571,7 +626,17 @@ def main():
   ap.add_argument("--min-speed", type=float, default=2.0, help="torque point speed floor, m/s (torqued uses 15)")
   ap.add_argument("--bootstrap", type=int, default=200)
   ap.add_argument("--jobs", type=int, default=os.cpu_count())
+  ap.add_argument("--lag-okay-window", type=float, default=lagd.MIN_OKAY_WINDOW_SEC,
+                  help=f"okay seconds lagd needs per {lagd.MOVING_WINDOW_SEC:g} s window (stock {lagd.MIN_OKAY_WINDOW_SEC:g}); " +
+                       "lowering it reaches low-speed bands but is no longer lagd's estimator")
+  ap.add_argument("--screen-lag", type=float, metavar="SECONDS",
+                  help="instead of fitting, list segments with at least this many lagd-okay seconds in some band " +
+                       "(run on qlogs to choose which rlogs to fetch)")
   args = ap.parse_args()
+
+  if args.screen_lag is not None:
+    screen_lag(args.logs, args.jobs, args.screen_lag)
+    return
 
   routes = discover(args.logs)
   if not routes:
@@ -579,7 +644,7 @@ def main():
   print(f"{sum(map(len, routes.values()))} segments in {len(routes)} routes", file=sys.stderr)
 
   with ProcessPoolExecutor(args.jobs) as ex:
-    results = list(ex.map(process_route, routes.values(), [args.min_speed] * len(routes)))
+    results = list(ex.map(process_route, routes.values(), [args.min_speed] * len(routes), [args.lag_okay_window] * len(routes)))
 
   fps = {r.fingerprint for r in results if r.fingerprint}
   if len(fps) > 1:
@@ -588,7 +653,8 @@ def main():
   summary = summarize(results, args.bootstrap)
   kinds = [k for r in results for _, k in r.segments]
   meta = {"fingerprint": next(iter(fps), "?"), "segments": len(kinds), "rlog": kinds.count("rlog"),
-          "qlog": kinds.count("qlog"), "routes": len(routes), "min_speed": args.min_speed, "n_boot": args.bootstrap}
+          "qlog": kinds.count("qlog"), "routes": len(routes), "min_speed": args.min_speed, "n_boot": args.bootstrap,
+          "lag_okay_window": args.lag_okay_window}
 
   os.makedirs(args.out, exist_ok=True)
   with open(os.path.join(args.out, "learner_bands.json"), "w") as f:

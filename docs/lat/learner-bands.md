@@ -93,35 +93,106 @@ variable-ratio rack or a small-angle offset bias. Either way it is **not a speed
 so per-band SR isn't worth building.** An earlier rough check that suggested SR fell
 below 25 mph came from a 30-minute sample and is withdrawn.
 
-## Lateral delay: cannot be answered from these logs
+## Lateral delay: needs rlogs from the right driving
 
 lagd needs at least 25 s of okay samples inside a 60 s window: engaged, no driver
-torque, not saturated, sensors valid, and a 2 s recovery after each interruption. Across
-the 31 rlogs, the stock > 50 mph gate saw **4 s** of qualifying driving, and no band
-produced a usable estimate. qlogs can't substitute: their deviceMotion runs at about
-5 Hz, which is too coarse to cross-correlate a 0.2 s lag.
+torque, not saturated, sensors valid, and a 2 s recovery after each interruption. qlogs
+can't be used for the estimate itself: their deviceMotion runs at about 5 Hz, which is
+too coarse to cross-correlate a 0.2 s lag. They can show *where* qualifying driving is,
+though. `learner_bands.py --screen-lag` approximates lagd's okay test from a qlog's
+controls messages, and on the 31 rlogs it matches the real lagd replay to within a few
+seconds per band (4/73/159/556/50 s vs 4/70/159/554/49 s).
 
-To answer this, collect more rlogs, ideally fixed routes covering each band. Relaxing
-lagd's window for the offline run would also work, but then it is no longer lagd's
-estimator.
+- **The original 31 rlogs** were picked for low-speed corner work. The stock > 50 mph gate
+  saw 4 s of qualifying driving in them, and no band produced a stock-window estimate.
+- **The old qlogs** (947 segments) hold about 13,000 s of qualifying driving above 50 mph,
+  but under 2,000 s in each band below 25 mph.
+- **The device's 867 current segments** (screened on the car,
+  `logs/device_lag_screen.csv`) hold 10,300 s above 50 mph, but only 444 s below 15 mph
+  and 750 s at 15–25 mph. **Low-speed driving almost never gives lagd 25 clean seconds
+  in a minute**, so stock lagd can't estimate low-speed lag from any amount of this
+  driving.
+- `--lag-okay-window 10` relaxes the window. It's flagged non-stock in the report,
+  because it is no longer lagd's own estimator. On the 31 rlogs it gives a first hint:
+  25–40 mph median 0.29 s (5 segments) and 15–25 mph 0.36 s (2 segments), against
+  0.21 s learned on the highway. **Lag may grow as speed falls, but this is too little
+  data to act on.** The 100 device segments with the most low- and mid-speed qualifying
+  time are listed in `logs/device_rlog_picks.txt`.
+
+## NNLC: models the trend, not the size
+
+`openpilot/tools/lat_metrics/nnlc_gain.py` evaluates the `HYUNDAI_IONIQ_5` NNLC model
+(fleet-trained, 2023-08) in steady state. With `--logs`, it also checks the model against
+driving. NNLC state isn't logged on official builds, so each segment is classified from
+`torqueState.error`: the stock controller logs exactly desired − actual there (median
+mismatch ~1e-8), while NNLC overwrites it (≥ 1e-2). The split is clean and agrees with
+`baseline.md`'s inferred on/off routes: 81 segments on, 505 off.
+
+Steady-state sweep over ±1 m/s², flat road:
+
+| speed | NNLC latAccelFactor | measured median slope | NNLC / measured |
+|---|---|---|---|
+| 10 mph | 3.26 | 1.34 | 2.4 |
+| 20 mph | 3.45 | 1.43 | 2.4 |
+| 32.5 mph | 3.73 | 1.95 | 1.9 |
+| 55 mph | 4.31 | 2.46 | 1.75 |
+
+Against driving: in steady, tracking frames (\|desired jerk\| < 0.3, \|desired −
+actual\| < 0.2), take the slope of gravity-adjusted lat accel against the torque
+actually commanded. That is a torqued-free estimate of what the car does. The same slope
+against NNLC's feedforward for those frames is what the model believes:
+
+| NNLC-off segments | plant gain | 90 % CI | NNLC gain | plant / NNLC |
+|---|---|---|---|---|
+| 15–25 mph | 2.04 | 1.90–2.17 | 3.67 | 0.55 |
+| 25–40 mph | 2.47 | 2.40–2.54 | 3.85 | 0.64 |
+| > 40 mph | 2.49 | 2.45–2.54 | 4.02 | 0.62 |
+
+The plant gain independently confirms the torque result: it rises with speed, and on
+the highway it lands on torqued's value. (Below 15 mph, the commanded torque is mostly
+feedback and the lat-accel range is tiny, which drags a regression slope towards zero.
+That row keeps only its direction. A ratio-of-levels check agrees: there, commanded
+torque is about 1.8–2× NNLC's feedforward.)
+
+**So the NNLC model believes this car gives about 1.6× more lateral accel per unit torque
+than it does on the highway, and about 2× more at 15–25 mph.** Its implied gain does
+fall with speed, but only about half as much as the car's does. NNLC's feedforward
+therefore under-asks at every speed, and more so at low speed, which is the same shape
+of error as the stock controller's single latAccelFactor. At 10 mph, NNLC actually asks
+for *less* torque per m/s² than the stock controller (1/3.26 vs 1/2.8).
+
+That changes how to read `baseline.md`'s NNLC result. NNLC's better sub-15 mph tracking
+can't come from a better feedforward. The likely source is its feedback path: below
+30 m/s, `nnlc.py` adds `LOW_SPEED_FACTOR`² × curvature to both setpoint and measurement
+(up to 144× near standstill). That gives a much stiffer low-speed error response than the
+stock PID.
+
+Why the model is off by about 1.6× even on the highway isn't established. It was trained
+in 2023 on fleet data. The training cars may have had a different EPS firmware (this
+car's is `NE MDPS R 1.00 1.06 57700GI000 4NEDR106`), or the torque normalisation may have
+changed since then. Either way, this car's own data says the model's absolute scale is
+wrong for it.
 
 ## What this means for the open questions
 
-- **Per-band torque is worth pursuing.** Here it is the biggest single gap between what
-  the controller assumes and what the car does at low speed. Before any online learner,
-  a cheaper first experiment is a **fixed speed schedule** on the learned latAccelFactor
-  (a scale of about 0.55 at < 25 mph, rising to 1.0 by about 40 mph), A/B-tested with
-  the alternating-arm protocol.
-- **NNLC takes vEgo as an input, so it may already model this.** That would explain why
-  NNLC improved the sub-15 mph second-bend peak by 63 % in `baseline.md`, and it bears on
-  whether NNLC stays on. The next comparison: NNLC's implied torque → lat-accel gain per
-  band against the median slopes above.
-- **SR per band:** no. **Lag per band:** unknown until more rlogs exist.
+- **Per-band torque is worth pursuing for both controllers.** For the stock controller:
+  a **fixed speed schedule** on the learned latAccelFactor (a scale of about 0.55 below
+  25 mph, rising to 1.0 by about 40 mph). For NNLC: a **speed-scheduled scale on its
+  feedforward** (about 1.6× on the highway, about 1.8× at 15–25 mph, more below), or a
+  model retrained on this car's data. A/B-test each with the alternating-arm protocol.
+- **NNLC on or off** is then a comparison of corrected controllers, not of the shipped
+  ones. Shipped NNLC wins at low speed through stiffer feedback, not a better plant model.
+- **SR per band:** no. **Lag per band:** stock lagd can't measure it below 25 mph from
+  normal driving. A relaxed window hints that lag grows at low speed; confirm with the
+  device rlogs.
 
 ## Reproduce
 
 ```
 cd ~/sunnypilot-experiments/sunnypilot && source .venv/bin/activate
 python3 openpilot/tools/lat_metrics/learner_bands.py ../logs/rlogs ../logs/qlogs --out ../logs/learner_bands --bootstrap 500
-python3 -m unittest openpilot.tools.lat_metrics.test_learner_bands
+python3 openpilot/tools/lat_metrics/nnlc_gain.py --bands ../logs/learner_bands/learner_bands.json --logs ../logs/rlogs ../logs/qlogs
+python3 openpilot/tools/lat_metrics/learner_bands.py <qlogs> --screen-lag 20       # where lagd-usable driving is
+python3 openpilot/tools/lat_metrics/learner_bands.py <rlogs> --lag-okay-window 10  # non-stock lag window
+python3 -m unittest openpilot.tools.lat_metrics.test_learner_bands openpilot.tools.lat_metrics.test_nnlc_gain
 ```
