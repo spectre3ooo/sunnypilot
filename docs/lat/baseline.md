@@ -197,8 +197,10 @@ on fixed segments in plan section 8.1, with NNLC as one of the arms.
 
 ## Caveats
 
-- `liveTorqueParameters` and `livePose` are **absent** from these rlogs, contrary to
-  plan §7. The §8.2 lateral-jerk comfort metric will need raw `accelerometer` instead.
+- `liveTorqueParameters` and `livePose` are absent from these rlogs **under those
+  names**: upstream renamed them to `lateralTorqueParameters` and `deviceMotion`, and
+  both are present (correction, T-1; see `learner-bands.md`). The §8.2 lateral-jerk
+  comfort metric can use `deviceMotion` instead of raw `accelerometer`.
 - `--geofence` is accepted but not yet applied; per-segment statistics stand without it.
 - Segments are whole 60 s recordings, not hand-picked corners. Fixed segments per
   plan §8.1 still need to be chosen and geofenced.
