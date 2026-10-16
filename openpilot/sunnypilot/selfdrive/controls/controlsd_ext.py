@@ -10,7 +10,7 @@ import openpilot.cereal.messaging as messaging
 from openpilot.cereal import log, custom
 
 from opendbc.car import structs
-from openpilot.common.git import get_short_branch, get_commit
+from openpilot.common.git import get_commit
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
@@ -144,6 +144,8 @@ class ControlsExt(ModelStateBase):
     lat.armId = int(self.lat_experiment_arm)
     lat.gitHash = self._git_hash
     lat.nnlcActive = bool(self.nnlc_active)
+    # only the torque controllers have a schedule; every other controller is unscaled
+    lat.latAccelFactorScale = float(getattr(getattr(self, "LaC", None), "laf_scale", 1.0))
 
     if self.CP.steerControlType != structs.CarParams.SteerControlType.angle:
       asked = float(CC.actuators.torque)

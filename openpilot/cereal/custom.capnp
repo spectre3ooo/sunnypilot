@@ -505,6 +505,11 @@ struct LateralControlSP @0xcb9fd56c7057593a {
   rightBoundIsEdge @13 :Bool;
 
   nnlcActive @14 :Bool;
+
+  # Scale applied to latAccelFactor this frame by the opt-in speed schedule
+  # (LatAccelFactorSpeedSchedule). 1.0 when off or when NNLC drives the feedforward;
+  # 0.0 in logs from builds before this field existed.
+  latAccelFactorScale @15 :Float32;
 }
 
 struct CustomReserved11 @0xc2243c65e0340384 {

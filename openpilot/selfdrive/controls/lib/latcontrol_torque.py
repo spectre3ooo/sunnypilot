@@ -10,6 +10,7 @@ from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.common.pid import PIDController
 
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_ext import LatControlTorqueExt
+from openpilot.sunnypilot.selfdrive.controls.lib.laf_speed_schedule import LatAccelFactorSpeedSchedule
 
 # At higher speeds (25+mph) we can assume:
 # Lateral acceleration achieved by a specific car correlates to
@@ -34,7 +35,7 @@ JERK_GAIN = 0.3
 LAT_ACCEL_REQUEST_BUFFER_SECONDS = 1.0
 VERSION = 1
 
-class LatControlTorque(LatControl):
+class LatControlTorque(LatControl, LatAccelFactorSpeedSchedule):
   def __init__(self, CP, CP_SP, CI, dt):
     super().__init__(CP, CP_SP, CI, dt)
     self.torque_params = CP.lateralTuning.torque.as_builder()
@@ -48,6 +49,7 @@ class LatControlTorque(LatControl):
     self.lookahead_frames = int(JERK_LOOKAHEAD_SECONDS / self.dt)
     self.jerk_filter = FirstOrderFilter(0.0, 1 / (2 * np.pi * LP_FILTER_CUTOFF_HZ), self.dt)
 
+    self.init_laf_speed_schedule(CP)
     self.extension = LatControlTorqueExt(self, CP, CP_SP, CI)
 
   def update_torque_parameters(self, latAccelFactor, latAccelOffset, friction):
@@ -64,6 +66,7 @@ class LatControlTorque(LatControl):
     # Override torque params from extension
     if self.extension.update_override_torque_params(self.torque_params):
       self.update_limits()
+    torque_params = self.get_scheduled_params(CS.vEgo)
 
     pid_log = log.ControlsState.LateralTorqueState.new_message()
     pid_log.version = VERSION
@@ -87,8 +90,8 @@ class LatControlTorque(LatControl):
     gravity_adjusted_future_lateral_accel = future_desired_lateral_accel - roll_compensation
     ff = gravity_adjusted_future_lateral_accel
     # latAccelOffset corrects roll compensation bias from device roll misalignment relative to car roll
-    ff -= self.torque_params.latAccelOffset
-    ff += get_friction(error + JERK_GAIN * desired_lateral_jerk, lateral_accel_deadzone, FRICTION_THRESHOLD, self.torque_params)
+    ff -= torque_params.latAccelOffset
+    ff += get_friction(error + JERK_GAIN * desired_lateral_jerk, lateral_accel_deadzone, FRICTION_THRESHOLD, torque_params)
 
     if not active:
       output_torque = 0.0
@@ -99,7 +102,7 @@ class LatControlTorque(LatControl):
 
       freeze_integrator = steer_limited_by_safety or CS.steeringPressed or CS.vEgo < 5
       output_lataccel = self.pid.update(pid_log.error, speed=CS.vEgo, feedforward=ff, freeze_integrator=freeze_integrator)
-      output_torque = self.torque_from_lateral_accel(output_lataccel, self.torque_params)
+      output_torque = self.torque_from_lateral_accel(output_lataccel, torque_params)
 
       # Lateral acceleration torque controller extension updates
       # Overrides pid_log.error and output_torque

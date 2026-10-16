@@ -70,6 +70,13 @@ class TestLateralControlSP(unittest.TestCase):
     self.assertTrue(_publish(Stub(nnlc=True), _cc(), _sm()).nnlcActive)
     self.assertFalse(_publish(Stub(nnlc=False), _cc(), _sm()).nnlcActive)
 
+  def test_laf_scale_is_logged(self):
+    """Each route must say whether, and how far, the latAccelFactor speed schedule scaled the feedforward."""
+    stub = Stub()
+    self.assertEqual(_publish(stub, _cc(), _sm()).latAccelFactorScale, 1.0)  # no torque controller: unscaled
+    stub.LaC = type("LaC", (), {"laf_scale": 0.6})()
+    self.assertAlmostEqual(_publish(stub, _cc(), _sm()).latAccelFactorScale, 0.6, places=6)
+
   def test_rate_limited_when_output_lags_request(self):
     lat = _publish(Stub(), _cc(torque=0.5), _sm(out_torque=0.2))
     self.assertTrue(lat.limitedRate)
