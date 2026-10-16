@@ -510,6 +510,12 @@ struct LateralControlSP @0xcb9fd56c7057593a {
   # (LatAccelFactorSpeedSchedule). 1.0 when off or when NNLC drives the feedforward;
   # 0.0 in logs from builds before this field existed.
   latAccelFactorScale @15 :Float32;
+
+  # Opt-in steering-angle feedforward (LatAngleFeedforward): how much of the feedforward it supplied this frame
+  # (0 = none, 1 = all; it fades out between 30 and 45 mph) and the torque it added, normalized like
+  # actuators.torque but in the controller's pre-negation output convention. 0 when off.
+  angleFfWeight @16 :Float32;
+  angleFfTorque @17 :Float32;
 }
 
 struct CustomReserved11 @0xc2243c65e0340384 {

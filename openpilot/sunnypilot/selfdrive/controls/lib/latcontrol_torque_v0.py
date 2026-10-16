@@ -11,6 +11,7 @@ from openpilot.common.pid import PIDController
 
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_ext import LatControlTorqueExt
 from openpilot.sunnypilot.selfdrive.controls.lib.laf_speed_schedule import LatAccelFactorSpeedSchedule
+from openpilot.sunnypilot.selfdrive.controls.lib.angle_ff.feedforward import LatAngleFeedforward
 
 # At higher speeds (25+mph) we can assume:
 # Lateral acceleration achieved by a specific car correlates to
@@ -35,7 +36,7 @@ FRICTION_THRESHOLD = 0.3
 VERSION = 0
 
 
-class LatControlTorque(LatControl, LatAccelFactorSpeedSchedule):
+class LatControlTorque(LatControl, LatAccelFactorSpeedSchedule, LatAngleFeedforward):
   def __init__(self, CP, CP_SP, CI, dt):
     super().__init__(CP, CP_SP, CI, dt)
     self.torque_params = CP.lateralTuning.torque.as_builder()
@@ -50,6 +51,7 @@ class LatControlTorque(LatControl, LatAccelFactorSpeedSchedule):
     self.measurement_rate_filter = FirstOrderFilter(0.0, 1 / (2 * np.pi * LP_FILTER_CUTOFF_HZ), self.dt)
 
     self.init_laf_speed_schedule(CP)
+    self.init_angle_ff(CP)
     self.extension = LatControlTorqueExt(self, CP, CP_SP, CI)
 
   def update_torque_parameters(self, latAccelFactor, latAccelOffset, friction):
@@ -73,6 +75,7 @@ class LatControlTorque(LatControl, LatAccelFactorSpeedSchedule):
     if not active:
       output_torque = 0.0
       pid_log.active = False
+      self._reset_angle_ff()
     else:
       measured_curvature = -VM.calc_curvature(math.radians(CS.steeringAngleDeg - params.angleOffsetDeg), CS.vEgo, params.roll)
       roll_compensation = params.roll * ACCELERATION_DUE_TO_GRAVITY
@@ -101,6 +104,9 @@ class LatControlTorque(LatControl, LatAccelFactorSpeedSchedule):
       ff -= torque_params.latAccelOffset
       # TODO jerk is weighted by lat_delay for legacy reasons, but should be made independent of it
       ff += get_friction(error, lateral_accel_deadzone, FRICTION_THRESHOLD, torque_params)
+      # opt-in steering-angle feedforward (LatAngleFeedforward) takes over from the lateral-accel one at low speed
+      angle_ff_weight, angle_ff_torque = self.update_angle_ff(active, CS, VM, params, desired_curvature, gravity_adjusted_future_lateral_accel)
+      ff *= 1.0 - angle_ff_weight
 
       freeze_integrator = steer_limited_by_safety or CS.steeringPressed or CS.vEgo < 5
       output_lataccel = self.pid.update(pid_log.error,
@@ -109,6 +115,8 @@ class LatControlTorque(LatControl, LatAccelFactorSpeedSchedule):
                                         speed=CS.vEgo,
                                         freeze_integrator=freeze_integrator)
       output_torque = self.torque_from_lateral_accel(output_lataccel, torque_params)
+      if angle_ff_weight > 0.0:
+        output_torque = float(np.clip(output_torque + angle_ff_torque, -self.steer_max, self.steer_max))
 
       # Lateral acceleration torque controller extension updates
       # Overrides pid_log.error and output_torque

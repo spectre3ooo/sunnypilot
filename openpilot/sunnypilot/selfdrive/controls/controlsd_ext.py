@@ -146,6 +146,8 @@ class ControlsExt(ModelStateBase):
     lat.nnlcActive = bool(self.nnlc_active)
     # only the torque controllers have a schedule; every other controller is unscaled
     lat.latAccelFactorScale = float(getattr(getattr(self, "LaC", None), "laf_scale", 1.0))
+    lat.angleFfWeight = float(getattr(getattr(self, "LaC", None), "angle_ff_weight", 0.0))
+    lat.angleFfTorque = float(getattr(getattr(self, "LaC", None), "angle_ff_torque", 0.0))
 
     if self.CP.steerControlType != structs.CarParams.SteerControlType.angle:
       asked = float(CC.actuators.torque)
