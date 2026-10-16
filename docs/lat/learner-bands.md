@@ -173,6 +173,46 @@ car's is `NE MDPS R 1.00 1.06 57700GI000 4NEDR106`), or the torque normalisation
 changed since then. Either way, this car's own data says the model's absolute scale is
 wrong for it.
 
+## What was changed (2026-10-16)
+
+The limits question is answered the same way as the feedforward: **by speed, not overall**. The jerk a
+torque rate can cause scales with lateral accel per unit torque, which roughly halves at low speed.
+
+- **Flat 10/10 rate reverted** (opendbc 8a3b99b6). It exceeded opendbc's ISO 11270 jerk test at every
+  speed (5.43 m/s³ against 3.0 up and 5.0 down), and had made that test skip CAN FD HKG. It was never driven.
+- **Speed-scheduled torque rate up, Ioniq 5 only** (opendbc 23a60c0e restores the generic panda mechanism;
+  dd7a76e0 enables it). The steps are 4 counts/frame below 20 mph, 3 up to ~27 mph, and the stock 2 above
+  that. Rate down stays 3 and the cap stays 270. panda enforces the same table, gated by
+  `HYUNDAI_PARAM_SP_CANFD_LOW_SPEED_RATE`, which is set only for `HYUNDAI_IONIQ_5`. Other CAN FD HKG cars
+  are unchanged, because nobody has measured their response per speed. `test_scheduled_rate_jerk_limits`
+  checks each speed against the measured lateral accel at full torque (upper 90 % CI): the max is 2.43 m/s³,
+  under the 2.5 bound with no tolerance. **This is always on for the Ioniq 5 on this branch**, since a panda
+  limit can't be toggled per drive.
+- **latAccelFactor speed schedule, opt-in** (`LatAccelFactorSpeedSchedule`, default off). It scales the
+  learned latAccelFactor by 0.6 at ≤ 10 mph, 0.75 at 20 mph and 1.0 from 34 mph, which sits between the two
+  estimators above. It's applied in both torque controllers. The car runs `LatControlTorqueV0`, because
+  `EnforceTorqueControl` is off, so the v1 file alone would have done nothing. It's skipped when NNLC drives
+  the feedforward. It's logged per frame as `lateralControlSP.latAccelFactorScale` (1.0 when off, 0.0 in
+  older logs).
+- **Not changed:** the 270 cap. Projected with the corrected feedforward, it would bind on ~20 % of
+  sub-15 mph frames. Raising it needs an EPS-acceptance and driver-overridability test first.
+
+### Running the A/B
+
+Flash this branch. The rate schedule is then always on, so every arm below shares it; compare against the
+older logs for the rate's own effect. Alternate routes between:
+
+| arm | `LatAccelFactorSpeedSchedule` | `LatExperimentArm` |
+|---|---|---|
+| A | 0 | 10 |
+| B | 1 | 11 |
+
+The param is read when controls start, so change it between drives. Set `LatExperimentArm` to match, so the
+arm is in every log; `latAccelFactorScale` confirms it independently. Keep NNLC off for both arms. Score
+with `lat_metrics.py`: pooled p95 tracking error and the second-bend peak per band, plus intervention
+share. `limitedCap` matters most, because if arm B mostly moves frames from rate-limited to cap-limited,
+the cap is the next limit to work on.
+
 ## What this means for the open questions
 
 - **Per-band torque is worth pursuing for both controllers.** For the stock controller:
