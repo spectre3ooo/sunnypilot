@@ -173,6 +173,50 @@ car's is `NE MDPS R 1.00 1.06 57700GI000 4NEDR106`), or the torque normalisation
 changed since then. Either way, this car's own data says the model's absolute scale is
 wrong for it.
 
+## Update: 866 rlogs from the device (2026-10-16)
+
+With the device on the bench, all 866 rlogs on it (routes 0x28–0x3f, official sunnypilot `dev`, V0
+controller, NNLC off, stock limits) were pulled and the analysis rerun over 1,813 segments: 897 rlog, 916
+qlog. Outputs: `logs/learner_bands_v2_lag25/` (stock lagd window) and `logs/learner_bands_v2_lag10/`.
+The stock-gates rows now reproduce the car's logged values closely: latAccelFactor 2.63 vs 2.60 logged,
+and lag 0.245 s vs 0.239 s.
+
+**Torque**, as the median slope with 90 % CI, |lat acc| ≤ 1:
+
+| band | median slope | 90 % CI | plant gain from commanded torque (NNLC-off) |
+|---|---|---|---|
+| < 15 mph | **0.91** | 0.65–1.28 | 0.67 (0.54–0.80) |
+| 15–25 mph | **1.58** | 1.46–1.66 | 1.94 (1.85–2.02) |
+| 25–40 mph | **1.98** | 1.92–2.04 | 2.38 (2.31–2.44) |
+| > 40 mph | **2.38** | 2.35–2.43 | 2.40 (2.35–2.44) |
+
+The low-speed drop is larger than the first pass showed: below 15 mph it is about 0.3–0.4× the highway
+value. The opt-in latAccelFactor schedule (0.6 / 0.75 / 1.0) is therefore *conservative* at the low end.
+Keep it for the first A/B, and go lower only if arm B is clearly better and doesn't run into the cap.
+The rate schedule's jerk test assumed 1.64 m/s² at full torque below 10 mph; the new data says less, so
+it has more margin than it was checked for.
+
+**Steer ratio:** unchanged, flat with speed (15.65–15.97).
+
+**Lateral delay: grows as speed falls.** Both windows agree:
+
+| band | stock window (25 s) | relaxed window (10 s, non-stock) |
+|---|---|---|
+| > 40 mph | 0.246 s, 146 segs | 0.247 s (0.239–0.258), 173 segs |
+| 25–40 mph | 0.300 s, 20 segs | 0.304 s (0.292–0.312), 50 segs |
+| 15–25 mph | 0.370 s, 7 segs | 0.368 s (0.351–0.372), 17 segs |
+| < 15 mph | 0.31 s, 1 seg | 0.31 s (0.26–0.35), 4 segs (too thin) |
+
+The car uses ~0.24 s everywhere, but below 40 mph the delay from requested to achieved lateral accel is
+0.30–0.37 s. **One caveat matters.** lagd measures the whole path from desired to actual lateral accel,
+and below 25 mph the rate limit alters the request on ~80 % of engaged frames. Part of this apparent
+low-speed delay is therefore the rate limit itself, which the new rate schedule reduces. Measure lag per
+band again on A/B arm data before building a lag schedule, or the schedule will compensate for a limiter
+that has since been loosened.
+
+**NNLC:** with 904 NNLC-off segments, plant / NNLC gain is 0.17 / 0.53 / 0.62 / 0.63 from the lowest
+band up. Same conclusion, tighter.
+
 ## What was changed (2026-10-16)
 
 The limits question is answered the same way as the feedforward: **by speed, not overall**. The jerk a
