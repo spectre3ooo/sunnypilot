@@ -222,10 +222,10 @@ band up. Same conclusion, tighter.
 The limits question is answered the same way as the feedforward: **by speed, not overall**. The jerk a
 torque rate can cause scales with lateral accel per unit torque, which roughly halves at low speed.
 
-- **Flat 10/10 rate reverted** (opendbc 8a3b99b6). It exceeded opendbc's ISO 11270 jerk test at every
+- **Flat 10/10 rate dropped.** It exceeded opendbc's ISO 11270 jerk test at every
   speed (5.43 m/s³ against 3.0 up and 5.0 down), and had made that test skip CAN FD HKG. It was never driven.
-- **Speed-scheduled torque rate up, Ioniq 5 only** (opendbc 23a60c0e restores the generic panda mechanism;
-  dd7a76e0 enables it). The steps are 4 counts/frame below 20 mph, 3 up to ~27 mph, and the stock 2 above
+- **Speed-scheduled torque rate up, Ioniq 5 only** (opendbc 715f03be adds the generic panda mechanism;
+  ce94919c enables it). The steps are 4 counts/frame below 20 mph, 3 up to ~27 mph, and the stock 2 above
   that. Rate down stays 3 and the cap stays 270. panda enforces the same table, gated by
   `HYUNDAI_PARAM_SP_CANFD_LOW_SPEED_RATE`, which is set only for `HYUNDAI_IONIQ_5`. Other CAN FD HKG cars
   are unchanged, because nobody has measured their response per speed. `test_scheduled_rate_jerk_limits`
