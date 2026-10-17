@@ -34,6 +34,7 @@ MPH = 0.44704
 STEER_MAX = 270  # counts; the model is stored normalized to this, like actuators.torque
 SPEED_NODES = np.array([0.5, 2.2, 4.5, 6.7, 8.9, 11.2, 15.6, 22.0, 30.0, 38.0])        # m/s
 ANGLE_NODES = np.array([0.0, 5.0, 15.0, 30.0, 60.0, 90.0, 150.0, 250.0, 400.0, 600.0])  # |deg|
+LOCK_MARGIN = 25.0  # deg; frames within this of full lock (taken from the data) are left out
 LAMBDAS = [0.3, 1.0, 3.0, 10.0, 30.0, 100.0]
 BANDS = [(0.5, 5 * MPH, "<5"), (5 * MPH, 15 * MPH, "5-15"), (15 * MPH, 25 * MPH, "15-25"), (25 * MPH, 45 * MPH, "25-45"), (45 * MPH, 60, ">45")]
 
@@ -42,6 +43,8 @@ def load(dataset_dir):
   segs = []
   for f in sorted(glob.glob(os.path.join(dataset_dir, "*.npz"))):
     x = np.load(f)["data"].astype(np.float64)
+    if x.shape[1] < len(COLS):  # datasets built before a column was added: those columns read as 0
+      x = np.column_stack([x, np.zeros((len(x), len(COLS) - x.shape[1]))])
     if len(x) < 20:
       continue
     route = os.path.basename(f)[:-4].rsplit("--", 1)[0]
@@ -88,8 +91,13 @@ def main():
   v, ang, rate, drv, eps, cmd = d["v"], d["angle"], d["rate_calc"], d["drv"], d["eps"], d["cmd"]
   s = np.sign(ang)
   nnlc = np.abs(np.nan_to_num(d["nnlc_err"])) > 1e-4
-  moving = v > 0.5
+  # at the steering stop the torque goes into the rack's end stop, not into holding the angle
+  lock = np.percentile(np.abs(ang), 99.99)
+  moving = (v > 0.5) & (np.abs(ang) < lock - LOCK_MARGIN)
   eng = (d["lat"] > 0.5) & (d["pressed"] < 0.5) & (np.abs(drv) < 80) & moving & ~nnlc
+  # with the angle feedforward on, a still wheel is held by whatever it asked for anywhere inside the friction band,
+  # so those holds would teach the model its own output; they still inform the EPS-own model, which is about the EPS
+  hold_ok = d["aff_w"] < 0.01
   man = (d["lat"] < 0.5) & moving
   steady = np.abs(rate) < 3
   ok_la = ~np.isnan(d["la_meas"])
@@ -97,17 +105,18 @@ def main():
   if np.corrcoef(la[ok_la & eng], d["act_la"][ok_la & eng])[0, 1] < 0:
     la = -la  # yaw sign convention of the pose: align with the controller's lateral accel
   la_adj = la - ACCELERATION_DUE_TO_GRAVITY * d["roll"]
+  print(f"full lock ~{lock:.0f} deg; {np.sum((v > 0.5) & ~moving)} frames within {LOCK_MARGIN:.0f} deg of it left out")
   print(f"frames {len(v)} ({len(v) / 20 / 3600:.1f} h, {d['routes']} routes): engaged hands-off {eng.sum() / 1200:.0f} min, manual {man.sum() / 1200:.0f} min")
 
   # counts -> Nm
-  k = eng & steady & (np.abs(cmd) > 10)
+  k = eng & steady & hold_ok & (np.abs(cmd) > 10)
   kc, bc = np.polyfit(cmd[k], eps[k], 1)
   # driver sensor scale: engaged and manual holds of the same state need the same column torque
   cells = []
   for lo, hi, _ in BANDS:
     for alo, ahi in ((2, 15), (15, 45), (45, 90), (90, 720)):
       sel = (v >= lo) & (v < hi) & (np.abs(ang) >= alo) & (np.abs(ang) < ahi) & steady
-      ke, km = eng & sel, man & sel
+      ke, km = eng & sel & hold_ok, man & sel
       if ke.sum() > 100 and km.sum() > 100:
         cells.append((np.median(eps[ke] * s[ke]), np.median(eps[km] * s[km]), np.median(drv[km] * s[km])))
   cells = np.array(cells)
@@ -124,7 +133,7 @@ def main():
   own_m = F(im) @ w_own
   y = np.full(len(v), np.nan)
   y[im] = (eps[im] + cdrv * drv[im] - own_m - bc) / kc / STEER_MAX
-  ih = np.flatnonzero(eng & steady & ok_la)
+  ih = np.flatnonzero(eng & steady & ok_la & hold_ok)
   y[ih] = cmd[ih] / STEER_MAX
   use = ~np.isnan(y) & (np.abs(y) < 2.6)
   unwind = (np.sign(rate) == -s) & (np.abs(rate) > 5) & (np.abs(ang) > 2)

@@ -13,7 +13,7 @@ from concurrent.futures import ProcessPoolExecutor
 import numpy as np
 
 COLS = ["t", "v", "a", "angle", "rate", "drv", "eps", "lat", "pressed", "cmd", "asked", "des_la", "act_la",
-        "roll", "la_meas", "cam_req", "cam_act", "nnlc_err", "fault"]
+        "roll", "la_meas", "cam_req", "cam_act", "nnlc_err", "fault", "aff_w"]
 DECIMATION = 5  # carState is 100 Hz
 
 
@@ -29,7 +29,7 @@ def seg(path, out_dir):
   cam = CANParser("hyundai_canfd_generated", [("LKAS", 100)], 2)
   calib = PoseCalibrator()
   cur = {"lat": 0.0, "cmd": 0.0, "asked": 0.0, "des_la": 0.0, "act_la": 0.0, "roll": 0.0, "la_meas": np.nan,
-         "cam_req": 0.0, "cam_act": 0.0, "nnlc_err": np.nan}
+         "cam_req": 0.0, "cam_act": 0.0, "nnlc_err": np.nan, "aff_w": 0.0}
   rows, cam_peaks = [], []
   n, v, t0 = 0, 0.0, None
   try:
@@ -48,6 +48,8 @@ def seg(path, out_dir):
           cur["des_la"], cur["act_la"] = ts.desiredLateralAccel, ts.actualLateralAccel
           # stock logs exactly desired - actual as the error; NNLC overwrites it (see nnlc_gain.py)
           cur["nnlc_err"] = ts.error - (ts.desiredLateralAccel - ts.actualLateralAccel)
+      elif w == "lateralControlSP":
+        cur["aff_w"] = m.lateralControlSP.angleFfWeight
       elif w == "vehicleParameters":
         cur["roll"] = m.vehicleParameters.roll
       elif w == "extrinsicsCalibration":
@@ -72,7 +74,7 @@ def seg(path, out_dir):
         rows.append((t - t0, v, cs.aEgo, cs.steeringAngleDeg, cs.steeringRateDeg, cs.steeringTorque, cs.steeringTorqueEps,
                      cur["lat"], float(cs.steeringPressed), cur["cmd"], cur["asked"], cur["des_la"], cur["act_la"],
                      cur["roll"], cur["la_meas"], cur["cam_req"], cur["cam_act"], cur["nnlc_err"],
-                     float(cs.steerFaultTemporary)))
+                     float(cs.steerFaultTemporary), cur["aff_w"]))
   except Exception as e:  # a truncated segment still yields what was read before the error
     if not rows:
       return name, f"error {e}"
