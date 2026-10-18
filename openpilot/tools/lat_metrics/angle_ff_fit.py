@@ -43,8 +43,9 @@ def load(dataset_dir):
   segs = []
   for f in sorted(glob.glob(os.path.join(dataset_dir, "*.npz"))):
     x = np.load(f)["data"].astype(np.float64)
-    if x.shape[1] < len(COLS):  # datasets built before a column was added: those columns read as 0
-      x = np.column_stack([x, np.zeros((len(x), len(COLS) - x.shape[1]))])
+    if x.shape[1] < len(COLS):  # datasets built before a column was added: aff_w reads as 0 (feature off), the rest NaN
+      pad = np.array([0.0 if c == "aff_w" else np.nan for c in COLS[x.shape[1]:]])
+      x = np.column_stack([x, np.tile(pad, (len(x), 1))])
     if len(x) < 20:
       continue
     route = os.path.basename(f)[:-4].rsplit("--", 1)[0]
