@@ -8,6 +8,7 @@ See the LICENSE.md file in the root directory for more details.
 from openpilot.common.params import Params
 from opendbc.car import structs
 from opendbc.safety import ALTERNATIVE_EXPERIENCE
+from opendbc.sunnypilot.car.hyundai import adrv_interceptor
 from opendbc.sunnypilot.car.hyundai.values import HyundaiFlagsSP, HyundaiSafetyFlagsSP
 from opendbc.sunnypilot.car.tesla.values import MadsScreenButtonType, TeslaFlagsSP
 
@@ -61,6 +62,12 @@ def set_car_specific_params(CP: structs.CarParams, CP_SP: structs.CarParamsSP, p
     if hyundai_cruise_main_toggleable:
       CP_SP.flags |= HyundaiFlagsSP.LONGITUDINAL_MAIN_CRUISE_TOGGLEABLE.value
       CP_SP.safetyParam |= HyundaiSafetyFlagsSP.LONG_MAIN_CRUISE_TOGGLEABLE
+
+    # sunnypilot long through the red-panda ADRV interceptor: the ADAS Driving ECU stays alive (AEB/FCA)
+    # and only its SCC_CONTROL is replaced. Only takes effect with alpha long on an LKA-steering CAN-FD car;
+    # needs the interceptor firmware on the red panda at the ADRV.
+    if params.get_bool("HyundaiAdrvInterceptorLong"):
+      adrv_interceptor.enable_interceptor_long(CP, CP_SP)
 
   # MADS Partial Support
   # MADS is currently partially supported for these platforms due to lack of consistent states to engage controls
