@@ -23,6 +23,7 @@ class CarSpecificEventsSP:
     self.CP_SP = CP_SP
 
     self.low_speed_alert = False
+    self.adrv_tripped = False  # latched for the drive: the red panda only clears its trip on an ignition cycle
 
   def update(self, CS: structs.CarState, events: Events):
     events_sp = EventsSP()
@@ -47,5 +48,20 @@ class CarSpecificEventsSP:
         if CS.cruiseState.standstill and not CS.brakePressed and self.CP_SP.enableGasInterceptor:
           if events.has(EventName.resumeRequired):
             events.remove(EventName.resumeRequired)
+
+    return events_sp
+
+  def update_adrv(self, CS_SP: custom.CarStateSP) -> EventsSP:
+    """Red panda fail-safe alerts. Called on every frame, outside the canValid gate: a missing ADRV is
+    exactly when CAN isn't valid."""
+    events_sp = EventsSP()
+
+    if self.CP.brand == 'hyundai':
+      if CS_SP.adrvInterceptorState in ('trippedTraffic', 'trippedWatchdog'):
+        self.adrv_tripped = True
+      if self.adrv_tripped:
+        events_sp.add(EventNameSP.adrvInterceptorTripped)
+      if CS_SP.adrvMissing:
+        events_sp.add(EventNameSP.adrvMissing)
 
     return events_sp

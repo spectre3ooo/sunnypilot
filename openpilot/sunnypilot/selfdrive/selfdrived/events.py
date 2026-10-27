@@ -260,4 +260,22 @@ EVENTS_SP: dict[int, dict[str, Alert | AlertCallbackType]] = {
       AlertStatus.normal, AlertSize.small,
       Priority.LOW, VisualAlert.none, AudibleAlert.prompt, 2.),
   },
+
+  # red panda ADRV interceptor fail-safe: warnings only, above canError (LOW); a missing ADRV already
+  # blocks engagement through canError, and a tripped interceptor is pure pass-through (stock ADAS)
+  EventNameSP.adrvInterceptorTripped: {
+    ET.PERMANENT: Alert(
+      "ADRV Interceptor Tripped",
+      "Pass-through until restart",
+      AlertStatus.userPrompt, AlertSize.mid,
+      Priority.MID, VisualAlert.none, AudibleAlert.prompt, 1.),
+  },
+
+  EventNameSP.adrvMissing: {
+    ET.PERMANENT: Alert(
+      "ADAS Unit Not Responding",
+      "Unplug Interceptor",
+      AlertStatus.userPrompt, AlertSize.mid,
+      Priority.MID, VisualAlert.none, AudibleAlert.prompt, 1.),
+  },
 }

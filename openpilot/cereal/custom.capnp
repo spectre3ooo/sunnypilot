@@ -357,6 +357,8 @@ struct OnroadEventSP @0xda96579883444c35 {
     e2eChime @23;
     laneChangeRoadEdge @24;
     bigModelReady @25;
+    adrvInterceptorTripped @26;
+    adrvMissing @27;
   }
 }
 
@@ -450,6 +452,18 @@ struct BackupManagerSP @0xf98d843bfd7004a3 {
 
 struct CarStateSP @0xb86e6369214c01c8 {
   speedLimit @0 :Float32;
+  adrvInterceptorState @1 :AdrvInterceptorState;  # red panda ADRV interceptor fail-safe status (A-CAN 0x7F9)
+  adrvMissing @2 :Bool;  # no ADRV_0x160 from the ADAS unit on E-CAN
+
+  enum AdrvInterceptorState {
+    none @0;  # not fitted, or no status for 3 s
+    starting @1;
+    engaged @2;
+    trippedTraffic @3;
+    trippedWatchdog @4;
+    canUpdate @5;
+    ignitionOff @6;
+  }
 }
 
 struct LiveMapDataSP @0xf416ec09499d9d19 {
